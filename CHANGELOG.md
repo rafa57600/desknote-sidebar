@@ -12,6 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release infrastructure: community health files, issue/PR
   templates, Dependabot, lint checks, and a tag-triggered release pipeline.
 
+### Security
+
+- Fixed a use-after-free race in the Win32 AppBar teardown path: the
+  subclass context is now freed from `WM_NCDESTROY` on the window-owner
+  thread instead of from a Tauri IPC/run-event thread.
+- `RemoveWindowSubclass` is no longer called from foreign threads (Win32
+  thread-affinity contract).
+- Narrowed the window capabilities to least privilege: replaced the
+  `core:default` umbrella with only the three permissions the app uses
+  (resize dragging, event listen/unlisten).
+- Replaced the placeholder `com.example.desknote.sidebar` bundle identifier
+  with `com.rafa57600.desknote`.
+
 ## [0.2.0] - 2026-08-14
 
 ### Changed

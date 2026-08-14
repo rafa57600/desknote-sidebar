@@ -3,9 +3,8 @@ mod commands;
 
 use appbar::AppBarManager;
 use commands::{
-    exit_app, get_appbar_state, list_monitors, refresh_sidebar_position,
-    register_with_window, set_sidebar_always_on_top, set_sidebar_edge,
-    set_sidebar_monitor, set_sidebar_width,
+    exit_app, get_appbar_state, list_monitors, refresh_sidebar_position, register_with_window,
+    set_sidebar_always_on_top, set_sidebar_edge, set_sidebar_monitor, set_sidebar_width,
 };
 use std::io;
 use tauri::{Manager, RunEvent};
@@ -29,8 +28,7 @@ pub fn run() {
                 .get_webview_window("main")
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "main window not found"))?;
 
-            register_with_window(app, &window)
-                .map_err(|message| io::Error::new(io::ErrorKind::Other, message))?;
+            register_with_window(app, &window).map_err(io::Error::other)?;
 
             // The native AppBar code also sets z-order and position. These Tauri settings
             // keep behavior predictable before/after AppBar transitions.
