@@ -57,17 +57,19 @@ pub fn set_sidebar_monitor(
 }
 
 #[tauri::command]
-pub fn refresh_sidebar_position(
-    state: State<'_, AppBarManager>,
-) -> Result<AppBarState, String> {
+pub fn refresh_sidebar_position(state: State<'_, AppBarManager>) -> Result<AppBarState, String> {
     state.refresh()
 }
 
 #[tauri::command]
 pub fn list_monitors(window: WebviewWindow) -> Result<Vec<MonitorInfo>, String> {
-    let current = window.current_monitor().map_err(|error| error.to_string())?;
+    let current = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?;
     let current_position = current.as_ref().map(|m| *m.position());
-    let monitors = window.available_monitors().map_err(|error| error.to_string())?;
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| error.to_string())?;
 
     Ok(monitors
         .into_iter()

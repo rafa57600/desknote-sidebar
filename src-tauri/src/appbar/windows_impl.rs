@@ -1,3 +1,13 @@
+//! Windows Shell AppBar integration.
+//!
+//! Threading contract: every `#[tauri::command]` in this project is a sync
+//! command, and Tauri 2 runs sync commands and `setup` on the main thread —
+//! the same thread that owns the window and runs its message loop. All Win32
+//! window calls in this module therefore execute on the window-owner thread.
+//! The one exception is `unregister()`, which may be invoked from run-event
+//! handlers as well; it performs no subclass/window-thread API calls and
+//! defers all teardown to `WM_NCDESTROY` on the UI thread.
+
 use serde::Serialize;
 use std::{
     ffi::c_void,
@@ -25,15 +35,15 @@ use windows::{
         UI::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Shell::{
-                DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, APPBARDATA,
+                DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
                 ABE_LEFT, ABE_RIGHT, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS,
-                ABM_WINDOWPOSCHANGED, ABN_FULLSCREENAPP, ABN_POSCHANGED, SHAppBarMessage,
+                ABM_WINDOWPOSCHANGED, ABN_FULLSCREENAPP, ABN_POSCHANGED, APPBARDATA,
             },
             WindowsAndMessaging::{
-                RegisterWindowMessageW, SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WM_DESTROY,
-                WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-                WM_SETTINGCHANGE, WM_SIZING, WM_WINDOWPOSCHANGED, WMSZ_LEFT, WMSZ_RIGHT,
+                RegisterWindowMessageW, SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WMSZ_LEFT, WMSZ_RIGHT, WM_DESTROY,
+                WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY,
+                WM_SETTINGCHANGE, WM_SIZING, WM_WINDOWPOSCHANGED,
             },
         },
     },
@@ -75,7 +85,11 @@ impl Edge {
     }
 
     fn from_atomic(value: u32) -> Self {
-        if value == 0 { Self::Left } else { Self::Right }
+        if value == 0 {
+            Self::Left
+        } else {
+            Self::Right
+        }
     }
 }
 
@@ -136,7 +150,10 @@ impl AppBarManager {
     }
 
     pub fn register(&self, window: &WebviewWindow) -> Result<AppBarState, String> {
-        let mut inner = self.inner.lock().map_err(|_| "AppBar state lock poisoned".to_string())?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "AppBar state lock poisoned".to_string())?;
         sync_inner_from_context(&mut inner);
         if inner.registration.is_some() {
             return Ok(state_from_inner(&inner));
@@ -146,7 +163,8 @@ impl AppBarManager {
         let hwnd_value = tauri_hwnd.0 as isize;
         let hwnd = hwnd_from_value(hwnd_value);
 
-        let callback_message = unsafe { RegisterWindowMessageW(w!("DeskNote.Sidebar.AppBar.Callback.v2")) };
+        let callback_message =
+            unsafe { RegisterWindowMessageW(w!("DeskNote.Sidebar.AppBar.Callback.v2")) };
         if callback_message == 0 {
             return Err("RegisterWindowMessageW failed".to_string());
         }
@@ -171,7 +189,9 @@ impl AppBarManager {
             SHAppBarMessage(ABM_NEW, &mut data)
         };
         if register_result == 0 {
-            unsafe { drop(Box::from_raw(context_ptr as *mut SubclassContext)); }
+            unsafe {
+                drop(Box::from_raw(context_ptr as *mut SubclassContext));
+            }
             return Err("Windows Shell rejected ABM_NEW".to_string());
         }
 
@@ -205,14 +225,30 @@ impl AppBarManager {
             return Err(error);
         }
 
-        inner.registration = Some(Registration { hwnd_value, context_ptr });
+        inner.registration = Some(Registration {
+            hwnd_value,
+            context_ptr,
+        });
         Ok(state_from_inner(&inner))
     }
 
+    /// Releases the Shell work-area reservation and detaches the registration.
+    ///
+    /// This is safe to call from any thread (Tauri IPC commands and run-event
+    /// handlers both use it). `RemoveWindowSubclass` and the context's `Box`
+    /// are deliberately NOT touched here: Win32 subclass APIs must run on the
+    /// thread that owns the window, and the context must stay alive while that
+    /// thread can still dispatch messages through it. Both happen on the UI
+    /// thread when the window is torn down — see `WM_NCDESTROY` in
+    /// `appbar_subclass_proc`.
     pub fn unregister(&self) {
-        let Ok(mut inner) = self.inner.lock() else { return; };
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
         sync_inner_from_context(&mut inner);
-        let Some(registration) = inner.registration.take() else { return; };
+        let Some(registration) = inner.registration.take() else {
+            return;
+        };
 
         unsafe {
             let hwnd = hwnd_from_value(registration.hwnd_value);
@@ -223,8 +259,6 @@ impl AppBarManager {
                     let mut data = appbar_data(hwnd);
                     SHAppBarMessage(ABM_REMOVE, &mut data);
                 }
-                let _ = RemoveWindowSubclass(hwnd, Some(appbar_subclass_proc), SUBCLASS_ID);
-                drop(Box::from_raw(context_ptr));
             }
         }
     }
@@ -244,55 +278,80 @@ impl AppBarManager {
     }
 
     pub fn set_width(&self, width: u32) -> Result<AppBarState, String> {
-        let mut inner = self.inner.lock().map_err(|_| "AppBar state lock poisoned".to_string())?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "AppBar state lock poisoned".to_string())?;
         inner.width = width.clamp(MIN_LOGICAL_WIDTH, MAX_LOGICAL_WIDTH);
         if let Some(registration) = &inner.registration {
             let context = unsafe { &*(registration.context_ptr as *const SubclassContext) };
             context.width.store(inner.width, Ordering::SeqCst);
-            unsafe { reposition(hwnd_from_value(registration.hwnd_value), context)?; }
+            unsafe {
+                reposition(hwnd_from_value(registration.hwnd_value), context)?;
+            }
         }
         Ok(state_from_inner(&inner))
     }
 
     pub fn set_edge(&self, edge: Edge) -> Result<AppBarState, String> {
-        let mut inner = self.inner.lock().map_err(|_| "AppBar state lock poisoned".to_string())?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "AppBar state lock poisoned".to_string())?;
         inner.edge = edge;
         if let Some(registration) = &inner.registration {
             let context = unsafe { &*(registration.context_ptr as *const SubclassContext) };
             context.edge.store(edge.as_atomic(), Ordering::SeqCst);
-            unsafe { reposition(hwnd_from_value(registration.hwnd_value), context)?; }
+            unsafe {
+                reposition(hwnd_from_value(registration.hwnd_value), context)?;
+            }
         }
         Ok(state_from_inner(&inner))
     }
 
     pub fn set_always_on_top(&self, enabled: bool) -> Result<AppBarState, String> {
-        let mut inner = self.inner.lock().map_err(|_| "AppBar state lock poisoned".to_string())?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "AppBar state lock poisoned".to_string())?;
         inner.always_on_top = enabled;
         if let Some(registration) = &inner.registration {
             let context = unsafe { &*(registration.context_ptr as *const SubclassContext) };
             context.always_on_top.store(enabled, Ordering::SeqCst);
-            unsafe { apply_z_order(hwnd_from_value(registration.hwnd_value), enabled)?; }
+            unsafe {
+                apply_z_order(hwnd_from_value(registration.hwnd_value), enabled)?;
+            }
         }
         Ok(state_from_inner(&inner))
     }
 
     pub fn set_monitor_anchor(&self, x: i32, y: i32) -> Result<AppBarState, String> {
-        let mut inner = self.inner.lock().map_err(|_| "AppBar state lock poisoned".to_string())?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "AppBar state lock poisoned".to_string())?;
         if let Some(registration) = &inner.registration {
             let context = unsafe { &*(registration.context_ptr as *const SubclassContext) };
             context.anchor_x.store(x, Ordering::SeqCst);
             context.anchor_y.store(y, Ordering::SeqCst);
-            unsafe { reposition(hwnd_from_value(registration.hwnd_value), context)?; }
+            unsafe {
+                reposition(hwnd_from_value(registration.hwnd_value), context)?;
+            }
             sync_inner_from_context(&mut inner);
         }
         Ok(state_from_inner(&inner))
     }
 
     pub fn refresh(&self) -> Result<AppBarState, String> {
-        let mut inner = self.inner.lock().map_err(|_| "AppBar state lock poisoned".to_string())?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "AppBar state lock poisoned".to_string())?;
         if let Some(registration) = &inner.registration {
             let context = unsafe { &*(registration.context_ptr as *const SubclassContext) };
-            unsafe { reposition(hwnd_from_value(registration.hwnd_value), context)?; }
+            unsafe {
+                reposition(hwnd_from_value(registration.hwnd_value), context)?;
+            }
             sync_inner_from_context(&mut inner);
         }
         Ok(state_from_inner(&inner))
@@ -300,8 +359,12 @@ impl AppBarManager {
 }
 
 fn sync_inner_from_context(inner: &mut Inner) {
-    let Some(registration) = &inner.registration else { return; };
-    if registration.context_ptr == 0 { return; }
+    let Some(registration) = &inner.registration else {
+        return;
+    };
+    if registration.context_ptr == 0 {
+        return;
+    }
     let context = unsafe { &*(registration.context_ptr as *const SubclassContext) };
     inner.width = context.width.load(Ordering::SeqCst);
     inner.edge = Edge::from_atomic(context.edge.load(Ordering::SeqCst));
@@ -323,10 +386,11 @@ fn hwnd_from_value(value: isize) -> HWND {
 }
 
 fn appbar_data(hwnd: HWND) -> APPBARDATA {
-    let mut data = APPBARDATA::default();
-    data.cbSize = size_of::<APPBARDATA>() as u32;
-    data.hWnd = hwnd;
-    data
+    APPBARDATA {
+        cbSize: size_of::<APPBARDATA>() as u32,
+        hWnd: hwnd,
+        ..Default::default()
+    }
 }
 
 unsafe fn configure_native_chrome(hwnd: HWND) {
@@ -351,8 +415,10 @@ unsafe fn configure_native_chrome(hwnd: HWND) {
 
 unsafe fn monitor_center_for_window(hwnd: HWND) -> Result<(i32, i32), String> {
     let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    let mut info = MONITORINFO::default();
-    info.cbSize = size_of::<MONITORINFO>() as u32;
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
     if !GetMonitorInfoW(monitor, &mut info).as_bool() {
         return Err("GetMonitorInfoW failed".to_string());
     }
@@ -368,8 +434,10 @@ unsafe fn monitor_metrics_for_context(context: &SubclassContext) -> Result<(RECT
         y: context.anchor_y.load(Ordering::SeqCst),
     };
     let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-    let mut info = MONITORINFO::default();
-    info.cbSize = size_of::<MONITORINFO>() as u32;
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
     if !GetMonitorInfoW(monitor, &mut info).as_bool() {
         return Err("GetMonitorInfoW failed".to_string());
     }
@@ -394,12 +462,7 @@ fn physical_to_logical(physical: i32, dpi: u32) -> u32 {
     (((physical.max(1) as u64) * 96 + (dpi as u64 / 2)) / dpi as u64) as u32
 }
 
-fn clamp_physical_width(
-    requested: i32,
-    monitor_rect: RECT,
-    dpi: u32,
-    interactive: bool,
-) -> i32 {
+fn clamp_physical_width(requested: i32, monitor_rect: RECT, dpi: u32, interactive: bool) -> i32 {
     let min_logical = if interactive {
         MIN_INTERACTIVE_LOGICAL_WIDTH
     } else {
@@ -420,7 +483,8 @@ unsafe fn reserve_rect(
     interactive: bool,
 ) -> Result<(RECT, u32), String> {
     let (monitor_rect, dpi) = monitor_metrics_for_context(context)?;
-    let physical_width = clamp_physical_width(requested_physical_width, monitor_rect, dpi, interactive);
+    let physical_width =
+        clamp_physical_width(requested_physical_width, monitor_rect, dpi, interactive);
     let edge = Edge::from_atomic(context.edge.load(Ordering::SeqCst));
 
     let mut data = appbar_data(hwnd);
@@ -464,7 +528,11 @@ unsafe fn reposition(hwnd: HWND, context: &SubclassContext) -> Result<(), String
         );
 
         let topmost = context.always_on_top.load(Ordering::SeqCst);
-        let insert_after = if topmost { Some(HWND_TOPMOST) } else { Some(HWND_NOTOPMOST) };
+        let insert_after = if topmost {
+            Some(HWND_TOPMOST)
+        } else {
+            Some(HWND_NOTOPMOST)
+        };
 
         SetWindowPos(
             hwnd,
@@ -542,7 +610,11 @@ unsafe fn handle_native_sizing(
 }
 
 unsafe fn apply_z_order(hwnd: HWND, topmost: bool) -> Result<(), String> {
-    let insert_after = if topmost { Some(HWND_TOPMOST) } else { Some(HWND_NOTOPMOST) };
+    let insert_after = if topmost {
+        Some(HWND_TOPMOST)
+    } else {
+        Some(HWND_NOTOPMOST)
+    };
     SetWindowPos(
         hwnd,
         insert_after,
@@ -616,6 +688,19 @@ unsafe extern "system" fn appbar_subclass_proc(
                 let mut data = appbar_data(hwnd);
                 SHAppBarMessage(ABM_REMOVE, &mut data);
             }
+        }
+        WM_NCDESTROY => {
+            // The last message a window receives, dispatched on the thread that
+            // owns the window. This is the only safe place to detach the
+            // subclass and free the context: after this returns, no further
+            // dispatch can reference it. If a shutdown path skipped WM_DESTROY,
+            // release the reservation here as well (swap is idempotent).
+            if context.registered.swap(false, Ordering::SeqCst) {
+                let mut data = appbar_data(hwnd);
+                SHAppBarMessage(ABM_REMOVE, &mut data);
+            }
+            let _ = RemoveWindowSubclass(hwnd, Some(appbar_subclass_proc), SUBCLASS_ID);
+            drop(Box::from_raw(ref_data as *mut SubclassContext));
         }
         _ => {}
     }

@@ -116,5 +116,5 @@ windows-only, so a Linux runner would lint only the no-op fallback.
 - AppBars cannot coexist with exclusive fullscreen apps (see
   [README — fullscreen limitation](../README.md#fullscreen-limitation)).
 - Notes are unencrypted local data; no sync exists by design.
-- The bundle identifier (`com.example.desknote.sidebar`) is a placeholder —
-  replace it before distributing, and use your own publisher metadata.
+- The bundle identifier is `com.rafa57600.desknote`; the app is unsigned —
+  add publisher metadata and code signing before commercial distribution.
