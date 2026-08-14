@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a problem with DeskNote Sidebar
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the details below.
+        Issues that don't provide this information may be closed without investigation.
+  - type: input
+    id: version
+    attributes:
+      label: DeskNote Sidebar version
+      description: Version shown in the installer name or Cargo.toml (e.g. 0.2.0)
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Which Windows version and edition are you on?
+      options:
+        - Windows 11 24H2
+        - Windows 11 23H2
+        - Windows 11 22H2
+        - Windows 10 22H2
+        - Other (specify in the description)
+    validations:
+      required: true
+  - type: input
+    id: display
+    attributes:
+      label: Display setup
+      description: Resolution, scaling (DPI), and number of monitors
+      placeholder: "2x 2560x1440, 150% scaling, secondary = left"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what actually happened?
+      placeholder: "The sidebar disappeared / reserved the wrong monitor / crashed on startup..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a clean app start.
+      placeholder: |
+        1. Start the app
+        2. Drag the divider to the left
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste any console output or error dialogs. If it crashed, include the Windows Event Viewer entry if possible.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or screen recordings
+      description: If relevant, attach images or a short recording showing the problem.
+    validations:
+      required: false
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I can reproduce this with the latest release
+          required: false

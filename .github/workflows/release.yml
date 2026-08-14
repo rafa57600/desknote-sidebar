@@ -1,0 +1,68 @@
+name: Release
+
+# Builds Windows installers and publishes a GitHub Release.
+# Trigger: push a tag like `v0.2.0` (must match the version in package.json).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & release (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri application
+        run: npm run tauri build
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem "src-tauri/target/release/bundle/msi/*.msi", "src-tauri/target/release/bundle/nsis/*.exe" |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Path "SHA256SUMS.txt" -Encoding ascii
+          Get-Content SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DeskNote Sidebar ${{ github.ref_name }}
+          body: |
+            See [CHANGELOG.md](https://github.com/rafa57600/desknote-sidebar/blob/main/CHANGELOG.md) for changes.
+
+            ### Installers
+            - **MSI** — Machine-wide installer (`*-x64.msi`)
+            - **NSIS** — Per-user installer (`*-setup.exe`)
+
+            Verify downloads with `SHA256SUMS.txt`.
+          draft: true
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+            SHA256SUMS.txt
